@@ -1,7 +1,7 @@
 #include <Adafruit_NeoPixel.h>
 // Equalizer chip control pins.
-const int PIN_STROBE = 2;
-const int PIN_RESET = 3;
+const int PIN_STROBE = 7;
+const int PIN_RESET = 8;
 // Where the data from the equalizer is sent to.
 const int PIN_INPUT = 0;
 // Sends data to lights.
@@ -12,7 +12,7 @@ const int CHANNEL_COUNT = 7;
 const int EQ_SWITCH_DELAY = 20;
 
 
-int channelSignal[CHANNEL_COUNT];
+float channelSignal[CHANNEL_COUNT];
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(60, PIN_LIGHTS, NEO_GRB + NEO_KHZ800);
 
 void setup() {
@@ -23,7 +23,12 @@ void setup() {
   pinMode(PIN_LIGHTS, OUTPUT);
   Serial.begin(9600);
   pixels.begin();
+  pixels.setBrightness(60);
 
+
+  digitalWrite(PIN_RESET, HIGH);
+  delay(1);
+  digitalWrite(PIN_RESET, LOW);
 }
 
 void loop() {
@@ -37,35 +42,34 @@ void colorize(){
   for (int i = 0; i < 8; i++){
     int start = i * 8;
     // Assuming that the values from the equalizer are from 0 to 1024.
-    int signalStrength = (channelSignal[i]/(float)1024) * 8;
+    float signalStrength = (channelSignal[i]/1024.0) * 8.0;
     //int signalStrength = 4;
-    for (int p = start; p < start + signalStrength; p++){
-      pixels.setPixelColor(p, getChannelColor(i));
+    for (int p = start; p < start + 7; p++){
+      if (p < ceil(signalStrength) + start)
+        pixels.setPixelColor(p, getChannelColor(i));
+      else
+        pixels.setPixelColor(p, pixels.Color(0, 0, 0));
     }
-    Serial.print(signalStrength);
+    Serial.print((int)signalStrength);
     Serial.print(" ");
     
   }  
   Serial.println();
   pixels.show();
-  delay(500);
+  delay(50);
 }
 
 void getChannelValues(){
 
-  digitalWrite(PIN_RESET, HIGH);
-  delay(1);
-  digitalWrite(PIN_RESET, LOW);
   
   // Retrieve values for each channel.
   for (int i = 0; i < CHANNEL_COUNT; i++){
-    // Data sheet recommends 18 microseconds.
-    int strobeLen = 1;
-    digitalWrite(PIN_STROBE, LOW);
-    delay(strobeLen);
-    channelSignal[i] = analogRead(  PIN_INPUT);    
     digitalWrite(PIN_STROBE, HIGH);
-    delay(strobeLen);
+    delay(1);
+    digitalWrite(PIN_STROBE, LOW);
+    delay(1);
+    channelSignal[i] = analogRead(PIN_INPUT);
+
   }
 }
 
@@ -89,4 +93,3 @@ uint32_t getChannelColor(int channel){
       return pixels.Color(125, 40, 40); 
   }
 }
-
