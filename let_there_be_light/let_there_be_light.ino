@@ -10,27 +10,29 @@ const int PIN_LIGHTS = 6;
 const int LEDS_PER_CHANNEL = 8;
 // Number of channel bands in the equalizer chip.
 const int CHANNEL_COUNT = 7;
-
-const int MAX_BRIGHTNESS = 100;
+// The brightess of the pixels.
+const int MAX_BRIGHTNESS = 255;
 
 enum State{
 	Idle,
 	Normal,
-	BaseDrop,
+	Beat,
 };
 
 State CurrentState = Normal;
 
 float channelSignal[CHANNEL_COUNT];
+
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(56, PIN_LIGHTS, NEO_GRB + NEO_KHZ800);
 
+// The number of samples that is used to calculate the average signal.
 const int SAMPLE_SIZE = 10;
 // Used to store the previous values of the LED signals for comparison.
 char previousValues[SAMPLE_SIZE][CHANNEL_COUNT];	
 int currentSample = 0;
 int sumValues[CHANNEL_COUNT];
-int averageValues[CHANNEL_COUNT];
-
+float averageValues[CHANNEL_COUNT];
+float totalAverageVolume = 0;
 
 void setup() {
 
@@ -53,8 +55,8 @@ void loop() {
 	recalculateAverage();
 
 	checkIfIdle();
-	//if (CurrentState != Idle)
-	//	checkIfBaseDrop();
+	if (CurrentState != Idle)
+		checkIfBaseDrop();
 
 	switch (CurrentState){
 		case Idle:
@@ -63,8 +65,8 @@ void loop() {
 		case Normal: 
 			normalMode();
 			break;
-		case BaseDrop:
-			baseDropMode();
+		case Beat:
+			beatMode();
 			break;
 	}
 }
@@ -75,12 +77,7 @@ void idleMode(){
 	for (int i = 0; i < CHANNEL_COUNT; i++){
 		getPixelsOfChannel(i, pixelsOfChannel);
 		for (int p = 0; p < LEDS_PER_CHANNEL; p++){
-			int randR = rand() % 255;
-			int randG = rand() % 255;
-			int randB = rand() % 255;
-			int randBright = rand() % MAX_BRIGHTNESS;
-			pixels.setPixelColor(pixelsOfChannel[p], pixels.Color(randR, randG, randB));
-			//pixels.setBrightness(randBright);
+			pixels.setPixelColor(pixelsOfChannel[p], getRandomColor());
 	  	}
 		Serial.print("- ");
 	}
@@ -91,118 +88,130 @@ void idleMode(){
 }
 
 int cyclesSinceAllZero = 0;
+// Puts the light show in idle mode if there is no signal detected.
 void checkIfIdle(){
-	CurrentState = Normal;
-
 	for (int i = 0; i < CHANNEL_COUNT; i++){
 		if (averageValues[i] != 0){
 			cyclesSinceAllZero = 0;
+			if (CurrentState == Idle)
+				CurrentState = Normal;
 			return;
 		}
 	}
 	cyclesSinceAllZero++;
-	if (cyclesSinceAllZero > 5){
+	if (cyclesSinceAllZero > 50){
 		CurrentState = Idle;
 		Serial.println(" No input? ");
-		cyclesSinceAllZero = 100;
 	}
-
-
-
 }
 
+float beatThreshold = 3.0;
+int maxTimeSinceLastBeat = 300;
+int timeSinceLastBeat = 0;
 // Activate base drop mode if all requirements are met.
 void checkIfBaseDrop(){
-/*
-	If the signal of all the channels follows this format:
-		channelx >= avrChannelx * (2 - x * .25)
-	then it is very likely that this is a base beat.
-*/
-	float recentBeatFactor = 1;
 
-	// This might help with very fast beats, it will make it more difficult for a beat to occur right
-	// after another.
-	if (CurrentState == BaseDrop){
-		return;
-		recentBeatFactor = 3;
-	}
-
-	bool beat = true;
-	//Serial.print("Comp: ");
+	bool foundBeat = false;
 	for (int i = 0; i < CHANNEL_COUNT; i++){
-		//Serial.print(channelSignal[i]);
-		int val = averageValues[i] * (2 - i * .5) * recentBeatFactor;
-		//Serial.print(" -> ");
-		//Serial.print(val);
-		//Serial.print(" ");
-		if (channelSignal[i] / 1024.0 * LEDS_PER_CHANNEL >= val ){
-			continue;
-		}
-		else {
-			beat = false;
+		int val = 8;
+		int signal = ceil(channelSignal[i] / 1023.0 * LEDS_PER_CHANNEL); 
+		if (signal == val && averageValues[i] < beatThreshold){
+			foundBeat = true;
 			break;
 		}
 	}
-	//Serial.println();
 
 	// Activate base drop mode
-	if (beat){
-		baseDropInit();
+	float changeInThreshold = .1;
+	if (foundBeat){
+		Serial.print("timeSinceLastBeat: ");
+		Serial.print(timeSinceLastBeat);
+		Serial.print(" beatThreshold: ");
+		Serial.print(beatThreshold);
+		Serial.print(";");
+		if (timeSinceLastBeat < 20){
+			beatThreshold -= changeInThreshold;
+		}
+		else
+		{
+			beatThreshold += changeInThreshold  * 3;
+		}
+		timeSinceLastBeat = 0;
+		beatModeInit();
+	}
+	else{
+		timeSinceLastBeat++;
+		if (timeSinceLastBeat > maxTimeSinceLastBeat){
+			beatThreshold += changeInThreshold * 3;
+			timeSinceLastBeat = 0;
+		}
 	}
 }
 
 void recalculateAverage(){
-	Serial.print(" Averages: ");
+	//Serial.print(" Averages: ");
+	float sum = 0;
 	for (int i = 0; i < CHANNEL_COUNT; i++){
 		averageValues[i] = sumValues[i] / SAMPLE_SIZE;
-		Serial.print(averageValues[i]);
-		Serial.print(" ");
+		sum += averageValues[i];
+		//Serial.print(averageValues[i]);
+		//Serial.print(" ");
 	}
-	Serial.println();
+	totalAverageVolume = sum / CHANNEL_COUNT;
+	if (totalAverageVolume < .01)
+		totalAverageVolume = .01;
+	//Serial.println();
 }
 
 int baseDropLevel = 8;
-void baseDropMode(){
+uint32_t beatColor;
+// The light show that is displayed for beats.
+void beatMode(){
 	// 8 LEDS per channel!!!
 	int pixelsOfChannel[LEDS_PER_CHANNEL];
 	for (int i = 0; i < CHANNEL_COUNT; i++){
 		getPixelsOfChannel(i, pixelsOfChannel);
+		float signalStrength = (channelSignal[i]/1023.0) * LEDS_PER_CHANNEL;	
 		for (int p = 0; p < LEDS_PER_CHANNEL; p++){
-			pixels.setPixelColor(pixelsOfChannel[p], pixels.Color(0,0,255));
-	  		pixels.setBrightness(MAX_BRIGHTNESS * baseDropLevel / MAX_BRIGHTNESS);
+			if (p < baseDropLevel || p < ceil(signalStrength))
+				pixels.setPixelColor(pixelsOfChannel[p], beatColor);
+	  		else // Make pixel display no color above the signal level.
+	  			pixels.setPixelColor(pixelsOfChannel[p], pixels.Color(0, 0, 0));
 	  	}
 		Serial.print(baseDropLevel);
 		Serial.print(" ");
 	}
 	Serial.print(" BASE DROP MODE");
 	Serial.println();  
-	baseDropLevel--;
+	baseDropLevel-= 2;
 	if (baseDropLevel == 0)
 		CurrentState = Normal;
 	pixels.show();
-	delay(50);
+	delay(0);
 }
 
+// The light show that is displayed normally.
 void normalMode(){
   // 8 LEDS per channel!!!
 	int pixelsOfChannel[LEDS_PER_CHANNEL];
 	for (int i = 0; i < CHANNEL_COUNT; i++){
 	// Assuming that the values from the equalizer are from 0 to 1024.
 		float signalStrength = (channelSignal[i]/1023.0) * LEDS_PER_CHANNEL;
+		//signalStrength = 1.5/totalAverageVolume * signalStrength;
 		getPixelsOfChannel(i, pixelsOfChannel);
 		for (int p = 0; p < LEDS_PER_CHANNEL; p++){
 			if (p < ceil(signalStrength))
 				pixels.setPixelColor(pixelsOfChannel[p], getChannelColor(i));
 	  		else // Make pixel display no color above the signal level.
 	  			pixels.setPixelColor(pixelsOfChannel[p], pixels.Color(0, 0, 0));
-	  		pixels.setBrightness(MAX_BRIGHTNESS);
 		}
 		Serial.print((int)signalStrength);
 		Serial.print(" ");
 	}  
+
 	Serial.println();
 	pixels.show();
-	delay(75);
+	delay(10);
 }
 
 // Retrieve values for each channel and adds the new one to the total sum for the average calculation.
@@ -244,6 +253,7 @@ void getPixelsOfChannel(int channel, int lights[]){
 	}
 }
 
+// Gets the predetermined color of each channel.
 uint32_t getChannelColor(int channel){
 	switch(channel){
 		case 0:
@@ -265,18 +275,32 @@ uint32_t getChannelColor(int channel){
 	}
 }
 
-void baseDropInit(){
-	uint32_t color = pixels.Color(0,0,255);
-	CurrentState = BaseDrop;
+uint32_t getRandomChannelColor(){
+	int randChannel = rand() % 7;
+	return getChannelColor(randChannel);
+}
+
+// Gets random color for pixel.
+uint32_t getRandomColor(){
+	int contrast = 8;
+	int randR = (255/contrast) * (rand() % contrast) - 1;
+	int randG = (255/contrast) * (rand() % contrast) - 1;
+	int randB = (255/contrast) * (rand() % contrast) - 1;
+	return pixels.Color(randR, randG, randB);
+}
+
+// Initializes beat mode
+void beatModeInit(){
+	beatColor = getRandomChannelColor();
+	CurrentState = Beat;
 	baseDropLevel = 8;
 
 	for (int i = 0; i < 60; i++){
-		pixels.setPixelColor(i, color);
+		pixels.setPixelColor(i, beatColor);
 	}
 
 	Serial.println("NEW BEAT");
 	pixels.show();
-	delay(50);
 }
 
 
